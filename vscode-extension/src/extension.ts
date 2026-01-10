@@ -5,26 +5,30 @@ const HTTP_PORT = 3000;
 
 export function activate(context: vscode.ExtensionContext) {
   const disposable = vscode.commands.registerCommand('editormate.showPairing', async () => {
-    // Try to discover the host automatically
-    const discovered = await findAgentHost();
-    let host: string | undefined = undefined;
-    if (discovered) {
-      host = discovered;
-    } else {
-      // try last used host
-      const last = context.globalState.get<string>('editormate.lastHost');
-      if (last) {
-        const ok = await probeHost(last);
-        if (ok) host = last;
+    // Present recent hosts, auto-detect, or manual entry
+    const lastHosts = context.globalState.get<string[]>('editormate.hosts') || [];
+    const pickItems = ['Auto-detect', ...lastHosts, 'Enter host manually'];
+    const pick = await vscode.window.showQuickPick(pickItems, { placeHolder: 'Select host or Auto-detect' });
+    if (!pick) return;
+
+    let host: string | undefined;
+    if (pick === 'Auto-detect') {
+      host = await findAgentHost();
+      if (!host) {
+        vscode.window.showWarningMessage('Auto-detect failed; please enter host manually.');
+        host = await vscode.window.showInputBox({ prompt: 'Enter host IP (e.g. 192.168.1.22)' });
       }
+    } else if (pick === 'Enter host manually') {
+      host = await vscode.window.showInputBox({ prompt: 'Enter host IP (e.g. 192.168.1.22)' });
+    } else {
+      host = pick;
     }
 
-    if (!host) {
-      host = await vscode.window.showInputBox({ prompt: 'Enter host IP (e.g. 192.168.1.22)', value: undefined });
-    }
     if (!host) return;
 
-    // Save host for future convenience
+    // Save host for future convenience (dedupe & keep recent 5)
+    const hostsArr = [host, ...lastHosts.filter(h => h !== host)].slice(0, 5);
+    await context.globalState.update('editormate.hosts', hostsArr);
     await context.globalState.update('editormate.lastHost', host);
 
     const panel = vscode.window.createWebviewPanel('editormate.pairing', 'EditorMate Pairing', vscode.ViewColumn.One, {
@@ -48,6 +52,10 @@ export function activate(context: vscode.ExtensionContext) {
       } else if (msg.command === 'open') {
         const uri = vscode.Uri.parse(msg.url);
         vscode.env.openExternal(uri);
+      } else if (msg.command === 'openPairingView') {
+        // open http://<host>/pairing/view in external browser
+        const viewUrl = `http://${host}:3000/pairing/view`;
+        vscode.env.openExternal(vscode.Uri.parse(viewUrl));
       }
     }, undefined, context.subscriptions);
 
@@ -129,8 +137,7 @@ function getWebviewContent() {
   <div id="status">Press Fetch to request a pairing token from the host.</div>
   <div style="margin-top:12px">
     <button id="fetch">Fetch Pairing</button>
-    <button id="open">Open random URL</button>
-  </div>
+    <button id="open">Open random URL</button>    <button id="openView">Open pairing view</button>  </div>
   <div id="result" style="margin-top:12px; display:none">
     <img id="qr" src="" alt="QR" />
     <div id="info"></div>
@@ -146,6 +153,9 @@ function getWebviewContent() {
     document.getElementById('open').addEventListener('click', () => {
       const url = prompt('Open URL (randomUrl):');
       if (url) vscode.postMessage({ command: 'open', url });
+    });
+    document.getElementById('openView').addEventListener('click', () => {
+      vscode.postMessage({ command: 'openPairingView' });
     });
 
     window.addEventListener('message', event => {
