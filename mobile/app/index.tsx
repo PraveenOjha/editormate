@@ -5,6 +5,8 @@ import * as Linking from 'expo-linking';
 import * as SecureStore from 'expo-secure-store';
 
 export default function Index() {
+  const [screen, setScreen] = useState<'home'|'sessions'|'scanner'>('home');
+
   const [hostIp, setHostIp] = useState("192.168.1.X");
   const [status, setStatus] = useState<"idle" | "connecting" | "connected" | "failed">("idle");
   const [logs, setLogs] = useState<string[]>([]);
@@ -14,6 +16,7 @@ export default function Index() {
   const [pairingLoading, setPairingLoading] = useState(false);
   const [pairedKeyInfo, setPairedKeyInfo] = useState<string | null>(null);
   const [showTerminal, setShowTerminal] = useState<any>(null);
+  const [qrFallbackUrl, setQrFallbackUrl] = useState<string | null>(null);
 
   const connectToHost = async () => {
     setStatus("connecting");
@@ -59,6 +62,28 @@ export default function Index() {
     return () => subscription.remove();
   }, []);
 
+  // Debug: log pairing object for visibility when it changes
+  useEffect(() => {
+    if (pairing) {
+      try { setLogs(prev => [...prev, `pairing loaded: ${JSON.stringify({ deepLink: pairing.deepLink, qr: !!pairing.qrDataUrl })}`]); } catch (e) { }
+    }
+  }, [pairing]);
+
+  // Session & scanner handlers
+  const onOpenSession = async (host: string) => {
+    setHostIp(host);
+    setScreen('home');
+    await connectToHost();
+  };
+
+  const onScan = () => setScreen('scanner');
+
+  const handleScannedData = async (data: string) => {
+    // If the QR provides a deep link, attempt to handle it via the existing deep link handler
+    setScreen('home');
+    handleDeepLink(data);
+  };
+
   async function handleDeepLink(url: string) {
     try {
       const parsed = Linking.parse(url);
@@ -82,6 +107,15 @@ export default function Index() {
 
           // Store the key securely
           await SecureStore.setItemAsync(`sshkey-${host}`, keyText, { keychainAccessible: SecureStore.WHEN_UNLOCKED });
+          // Update index of saved keys for Sessions screen
+          try {
+            const idxRaw = await SecureStore.getItemAsync('sshkey-index');
+            const idx = idxRaw ? JSON.parse(idxRaw) as string[] : [];
+            if (!idx.includes(host)) {
+              idx.unshift(host);
+              await SecureStore.setItemAsync('sshkey-index', JSON.stringify(idx));
+            }
+          } catch (e) { /* ignore */ }
           setPairedKeyInfo(`sshkey-${host}`);
           Alert.alert('Paired', `Private key saved for ${host}`);
         } catch (err: any) {
@@ -144,6 +178,9 @@ export default function Index() {
               const r = await fetch(`http://${hostIp}:3000/pairing`);
               const j = await r.json();
               setPairing(j);
+          // Log pairing keys for debugging QR issues
+          setLogs(prev => [...prev, `Pairing data received: qrDataUrl=${!!j.qrDataUrl}, deepLink=${j.deepLink ? j.deepLink.slice(0,80) : 'none'}`]);
+          console.debug('Pairing response', j);
             } catch (err: any) {
               Alert.alert('Pairing failed', String(err));
             } finally {
@@ -156,7 +193,21 @@ export default function Index() {
           {pairing && (
             <View style={[styles.card, { marginTop: 12 }] }>
               <Text style={[styles.label, { marginBottom: 8 }]}>Pairing</Text>
-              <Image source={{ uri: pairing.qrDataUrl }} style={{ width: 180, height: 180, alignSelf: 'center', marginBottom: 8 }} />
+              {/* QR image: show and log errors; fallback to deepLink if image missing */}
+              {qrFallbackUrl ? (
+                <Image source={{ uri: qrFallbackUrl }} style={{ width: 180, height: 180, alignSelf: 'center', marginBottom: 8 }} onError={(e:any) => { setLogs(prev => [...prev, 'Fallback QR Image failed to load']); console.warn('QR Image fallback error', e); }} resizeMode='contain' />
+              ) : pairing.qrDataUrl ? (
+                <Image source={{ uri: pairing.qrDataUrl }} style={{ width: 180, height: 180, alignSelf: 'center', marginBottom: 8 }} onError={(e:any) => { setLogs(prev => [...prev, 'QR Image failed to load, switching to http endpoint']); console.warn('QR Image error', e); try { const token = (pairing.randomUrl||'').split('/').pop(); if (token) setQrFallbackUrl(`http://${hostIp}:3000/pairing/qr/${token}`); } catch (ee) {} }} resizeMode='contain' />
+              ) : (
+                <View style={{ padding: 12, alignItems: 'center' }}>
+                  <Text style={styles.logText}>QR not available</Text>
+                  {pairing.deepLink && (
+                    <Pressable style={[styles.button, { marginTop: 8 }]} onPress={() => { Linking.openURL(pairing.deepLink); }}>
+                      <Text style={styles.buttonText}>Open Deep Link</Text>
+                    </Pressable>
+                  )}
+                </View>
+              )}
               {pairing.sshCommands.map((cmd: string, i: number) => (
                 <View key={i} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                   <Text style={styles.logText}>{cmd}</Text>
@@ -179,6 +230,38 @@ export default function Index() {
                     <Text style={styles.buttonText}>Open In-App Terminal</Text>
                   </Pressable>
 
+                  <Pressable style={[styles.button, { marginTop: 12 }]} onPress={async () => {
+                    const key = await SecureStore.getItemAsync(pairedKeyInfo!);
+                    setLogs(prev => [...prev, 'Attempting SSH chat connection (native) ...']);
+                    try {
+                      // Native SSH module (not available in Expo), this is a stub that will be replaced by a native implementation.
+                      // If native SSH is available, it should expose a method to open the 'editormate' subsystem and deliver JSON lines in both directions.
+                      // Fallback: subscribe to SSE via HTTP and log messages
+                      // @ts-ignore
+                      const SSHSubsystem = (global as any).SSHSubsystem;
+                      if (SSHSubsystem && SSHSubsystem.open) {
+                        SSHSubsystem.open({ host: hostIp, port: 2222, username: 'user', privateKey: key, subsystem: 'editormate' }, (msg: any) => {
+                          setLogs(prev => [...prev, `SSH msg: ${JSON.stringify(msg)}`]);
+                        });
+                      } else {
+                        setLogs(prev => [...prev, 'Native SSH module not found; using HTTP fallback (SSE + POST)']);
+                        try {
+                          // dynamic import to avoid bundling EventSource in expo if not present
+                          const EventSource = (global as any).EventSource || (await import('eventsource')).default;
+                          const es = new EventSource(`http://${hostIp}:3000/events` as any);
+                          es.onmessage = (e: any) => setLogs(prev => [...prev, `SSE: ${e.data}`]);
+                          es.onerror = (err: any) => setLogs(prev => [...prev, `SSE error: ${String(err)}`]);
+                        } catch (e) {
+                          setLogs(prev => [...prev, `SSE subscription failed: ${String(e)}`]);
+                        }
+                      }
+                    } catch (err: any) {
+                      setLogs(prev => [...prev, `SSH chat setup failed: ${err.message || String(err)}`]);
+                    }
+                  }}>
+                    <Text style={styles.buttonText}>Connect Chat (SSH)</Text>
+                  </Pressable>
+
                 </View>
               ) : (
                 <View style={{ marginTop: 12 }}>
@@ -193,9 +276,43 @@ export default function Index() {
       {showTerminal && (
         <View style={{ marginTop: 20 }}>
           {/* Lazy-load the terminal so it doesn't affect bundle size too much */}
-          {React.createElement(require('../src/components/Terminal').default, { ...showTerminal, onClose: () => setShowTerminal(null) })}
+          {(() => {
+            try {
+              const Terminal = require('../src/components/Terminal').default;
+              return React.createElement(Terminal, { ...showTerminal, onClose: () => setShowTerminal(null) });
+            } catch (e) {
+              // Terminal not implemented yet; show friendly placeholder
+              return (
+                <View style={{ padding: 12, backgroundColor: '#111827', borderRadius: 8 }}>
+                  <Text style={{ color: '#94a3b8' }}>Terminal is not available in this build.</Text>
+                  <Pressable style={[styles.button, { marginTop: 8 }]} onPress={() => setShowTerminal(null)}>
+                    <Text style={styles.buttonText}>Close</Text>
+                  </Pressable>
+                </View>
+              );
+            }
+          })()}
         </View>
       )}
+
+      {/* Sessions and Scanner screens */}
+      {screen === 'sessions' && (
+        React.createElement(require('../src/screens/Sessions').default, { onOpenSession, onScan })
+      )}
+
+      {screen === 'scanner' && (
+        React.createElement(require('../src/components/QRScanner').default, { onScanned: handleScannedData, onCancel: () => setScreen('home') })
+      )}
+
+      {/* Simple floating controls */}
+      <View style={{ position: 'absolute', right: 16, bottom: 16 }}>
+        <Pressable style={{ backgroundColor: '#0ea5a3', padding: 10, borderRadius: 8, marginBottom: 8 }} onPress={() => setScreen('sessions')}>
+          <Text style={{ color: '#002022' }}>Sessions</Text>
+        </Pressable>
+        <Pressable style={{ backgroundColor: '#38bdf8', padding: 10, borderRadius: 8 }} onPress={() => setScreen('scanner')}>
+          <Text style={{ color: '#08263b' }}>Scan QR</Text>
+        </Pressable>
+      </View>
 
     </View>
   );

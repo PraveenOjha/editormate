@@ -36,6 +36,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateEphemeralKey = generateEphemeralKey;
 exports.getAndConsumeToken = getAndConsumeToken;
 exports.listActivePairs = listActivePairs;
+exports.revokeToken = revokeToken;
+exports.revokePublicKey = revokePublicKey;
+exports.rotateKey = rotateKey;
 const child_process_1 = require("child_process");
 const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
@@ -158,4 +161,47 @@ function getAndConsumeToken(token) {
 }
 function listActivePairs() {
     return Array.from(STORE.values());
+}
+function revokeToken(token) {
+    const r = STORE.get(token);
+    if (!r)
+        return false;
+    try {
+        removeAuthorizedKey(r.publicKey);
+    }
+    catch (e) {
+        console.warn('Failed to remove key during revoke', e);
+    }
+    STORE.delete(token);
+    return true;
+}
+function revokePublicKey(publicKey) {
+    try {
+        removeAuthorizedKey(publicKey);
+        // also remove any matching store entries that reference the public key
+        for (const [k, v] of STORE.entries()) {
+            if (v.publicKey === publicKey)
+                STORE.delete(k);
+        }
+        return true;
+    }
+    catch (e) {
+        console.warn('Failed to revoke publicKey', e);
+        return false;
+    }
+}
+// Rotate keys: generate a fresh ephemeral keypair and optionally revoke an old public key.
+// Returns the newly created PairRecord which includes the token and privateKey.
+async function rotateKey(oldPublicKey) {
+    // Generate a new ephemeral pair (this also appends the new public key to authorized_keys)
+    const newPair = await generateEphemeralKey();
+    if (oldPublicKey) {
+        try {
+            revokePublicKey(oldPublicKey);
+        }
+        catch (e) {
+            console.warn('Failed to revoke old public key during rotate', e);
+        }
+    }
+    return newPair;
 }

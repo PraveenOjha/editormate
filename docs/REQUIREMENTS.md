@@ -17,6 +17,7 @@
     - Host Agent validates port 2222 availability.
     - Host Agent displays "Connect to: <IP>:2222" QR/Text.
 - **Auth**: SSH Key pair generated on mobile, public key added to host `authorized_keys` (or custom agent auth).
+- **Notifications & Wake (MVP - TODO)**: Use **FCM** (Android) and **APNs** (iOS) to send minimal wake-token pushes; server will relay wake-token → mobile, mobile will perform a quick authenticated SSH/tunnel connection and fetch the full message (see `docs/notifications-tunneling.md`).
 - **Focus**: Get the control loop working without complex traversal logic.
 
 ### Phase 2: Remote Access (Production)

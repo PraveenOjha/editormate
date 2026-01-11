@@ -4,12 +4,15 @@ import { getLocalIPs, checkInternetConnection } from './utils/network';
 
 const HTTP_PORT = process.env.HTTP_PORT || 3000;
 const SSH_PORT = parseInt(process.env.SSH_PORT || '2222', 10);
+// SSH server instance (populated when the server starts)
+let sshServer: any = null;
 
 // Start HTTP Server (for health checks / REST API later)
 import QRCode from 'qrcode';
 import { createEphemeralKeyPair, consumeToken } from './server/keyManager';
 
 const httpServer = createServer(async (req, res) => {
+  console.log('HTTP REQ', req.method, req.url);
   const online = await checkInternetConnection();
 
 
@@ -76,6 +79,29 @@ const httpServer = createServer(async (req, res) => {
     }
   }
 
+  // GET /pairing/qr/:token -> return PNG image for deep link (helpful for mobile to fetch an http URL instead of a data URI)
+  if (req.url && req.url.startsWith('/pairing/qr/')) {
+    const token = req.url.split('/').pop() || '';
+    // Generate a PNG for the deep link for this token. We do NOT require the token to be active
+    // to allow clients to display the pairing QR as a convenience; the one-time key fetch will still
+    // validate the token when the client attempts to download the private key.
+    try {
+      const ips = getLocalIPs();
+      const host = ips[0] || 'localhost';
+      const deepLink = `editormate://pair?host=${encodeURIComponent(host)}&port=${SSH_PORT}&token=${token}`;
+      const dataUrl = await QRCode.toDataURL(deepLink);
+      const b64 = dataUrl.split(',')[1] || '';
+      const buf = Buffer.from(b64, 'base64');
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': buf.length });
+      res.end(buf);
+      return;
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: String(e) }));
+      return;
+    }
+  }
+
   // Single-use download endpoint: GET /random/:token
   if (req.url && req.url.startsWith('/random/')) {
     const token = req.url.split('/').pop() || '';
@@ -108,6 +134,102 @@ const httpServer = createServer(async (req, res) => {
     }
   }
 
+  // Admin: list active pairing tokens (localhost only)
+  if (req.url === '/pairing/active' && req.method === 'GET') {
+    const remote = (req.socket && req.socket.remoteAddress) || '';
+    if (remote !== '127.0.0.1' && remote !== '::1') {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'forbidden' }));
+      return;
+    }
+    (async () => {
+      const active = (await import('./pairing')).listActivePairs().map((p: any) => ({ token: p.token, createdAt: p.createdAt, expiresAt: p.expiresAt }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, active }));
+    })();
+    return;
+  }
+
+  // Admin: revoke pairing by token or publicKey (localhost only)
+  if (req.url === '/pairing/revoke' && req.method === 'POST') {
+    const remote = (req.socket && req.socket.remoteAddress) || '';
+    if (remote !== '127.0.0.1' && remote !== '::1') {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'forbidden' }));
+      return;
+    }
+    let body = '';
+    req.on('data', (c) => body += c);
+    req.on('end', async () => {
+      try {
+        const j = JSON.parse(body || '{}');
+        const token = j.token;
+        const publicKey = j.publicKey;
+        if (token) {
+          const ok = (await import('./pairing')).revokeToken(token);
+          if (ok) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success: true })); return; }
+        }
+        if (publicKey) {
+          const ok = (await import('./pairing')).revokePublicKey(publicKey);
+          if (ok) {
+            try { sshServer.disconnectClientsByPublicKey(publicKey.split(/\s+/)[1]); } catch (e) { }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true }));
+            return;
+          }
+        }
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'not-found' }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'invalid-json' }));
+      }
+    });
+    return;
+  }
+
+  // Admin: rotate pairing key (generate new ephemeral key and revoke an old key if provided)
+  if (req.url === '/pairing/rotate' && req.method === 'POST') {
+    const remote = (req.socket && req.socket.remoteAddress) || '';
+    if (remote !== '127.0.0.1' && remote !== '::1') {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'forbidden' }));
+      return;
+    }
+    let body2 = '';
+    req.on('data', (c) => body2 += c);
+    req.on('end', async () => {
+      try {
+        const j2 = JSON.parse(body2 || '{}');
+        const oldPublicKey = j2.publicKey;
+        const { rotateKey } = await import('./pairing');
+        const newPair = await rotateKey(oldPublicKey);
+        const ips = getLocalIPs();
+        const host = ips[0] || 'localhost';
+        const url = `http://${host}:${HTTP_PORT}/random/${newPair.token}`;
+        const deepLink = `editormate://pair?host=${encodeURIComponent(host)}&port=${SSH_PORT}&token=${newPair.token}`;
+        let qrDataUrl = '';
+        try { qrDataUrl = await QRCode.toDataURL(deepLink); } catch (e) { /* ignore qr gen errors */ }
+
+        // Broadcast a logout event to connected clients and include the new pairing URL
+        try { broadcastToSse({ type: 'logout', reason: 'key-rotated', time: Date.now(), newPairUrl: url, deepLink, qrDataUrl }); } catch (e) { }
+
+        // If we were given an old public key, try to disconnect any clients that used it
+        if (oldPublicKey) {
+          try { sshServer.disconnectClientsByPublicKey(oldPublicKey.split(/\s+/)[1]); } catch (e) { }
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, newPair: { token: newPair.token, publicKey: newPair.publicKey, deepLink, qrDataUrl }, url }));
+        return;
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'invalid-json' }));
+      }
+    });
+    return;
+  }
+
   // Deliver one-time private key
   if (req.url && req.url.startsWith('/random/') && req.method === 'GET') {
     const parts = req.url.split('/');
@@ -125,7 +247,50 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // Simple in-memory SSE pub/sub for chat/messages
+  const sseClients = (httpServer as any).__sseClients = (httpServer as any).__sseClients || new Set<import('http').ServerResponse>();
 
+  if (req.url === '/events' && req.method === 'GET') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.write('\n');
+    sseClients.add(res as any);
+    req.on('close', () => { sseClients.delete(res as any); });
+    return;
+  }
+
+  if (req.url === '/messages' && req.method === 'POST') {
+    // For security, disallow HTTP-based message posting in production.
+    // This endpoint is available only when ALLOW_HTTP_MESSAGES_FOR_DEV=true (for development/testing).
+    if (process.env.ALLOW_HTTP_MESSAGES_FOR_DEV !== 'true') {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'HTTP messages disabled. Use SSH subsystem "editormate" to send messages.' }));
+      return;
+    }
+
+    // Accept JSON body and broadcast to SSE clients (development mode only)
+    let body = '';
+    req.on('data', (chunk) => body += chunk);
+    req.on('end', () => {
+      try {
+        const msg = JSON.parse(body || '{}');
+        const payload = { sender: msg.sender || 'mobile', text: msg.text || msg.message || '', ts: Date.now() };
+        for (const cl of sseClients) {
+          try { cl.write(`data: ${JSON.stringify(payload)}\n\n`); } catch (e) { /* ignore */ }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'invalid-json' }));
+      }
+    });
+    return;
+  }
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ 
@@ -146,10 +311,40 @@ httpServer.listen(HTTP_PORT, () => {
   console.log(`HTTP Server running on port ${HTTP_PORT}`);
 });
 
+// Helper to broadcast events to SSE clients (used by HTTP /messages and SSH subsystem)
+export function broadcastToSse(payload: any) {
+  try {
+    const sseClients = (httpServer as any).__sseClients as Set<import('http').ServerResponse> | undefined;
+    if (sseClients) {
+      for (const cl of sseClients) {
+        try { cl.write(`data: ${JSON.stringify(payload)}\n\n`); } catch (e) { /* ignore write errors */ }
+      }
+    }
+    // Also broadcast to open SSH subsystem streams if any
+    const sshStreams = (httpServer as any).__sshSubsystems as Set<any> | undefined;
+    if (sshStreams) {
+      for (const st of sshStreams) {
+        try { st.write(JSON.stringify(payload) + '\n'); } catch (e) { /* ignore */ }
+      }
+    }
+  } catch (e) {
+    console.error('broadcastToSse failed:', e);
+  }
+}
+
+export function registerSshSubsystem(stream: any) {
+  const sshStreams = (httpServer as any).__sshSubsystems = (httpServer as any).__sshSubsystems || new Set<any>();
+  sshStreams.add(stream);
+}
+
+export function unregisterSshSubsystem(stream: any) {
+  const sshStreams = (httpServer as any).__sshSubsystems as Set<any> | undefined;
+  if (sshStreams) sshStreams.delete(stream);
+}
+
 // Start SSH Server
 try {
-  const sshServer = new SSHAgentServer(SSH_PORT);
-  sshServer.start();
+    sshServer = new SSHAgentServer(SSH_PORT);
   
   // Requirement: User needs to know how to connect
   console.log('\n==========================================');

@@ -125,3 +125,40 @@ export function getAndConsumeToken(token: string): PairRecord | null {
 export function listActivePairs() {
   return Array.from(STORE.values());
 }
+
+export function revokeToken(token: string): boolean {
+  const r = STORE.get(token);
+  if (!r) return false;
+  try { removeAuthorizedKey(r.publicKey); } catch (e) { console.warn('Failed to remove key during revoke', e); }
+  STORE.delete(token);
+  return true;
+}
+
+export function revokePublicKey(publicKey: string): boolean {
+  try {
+    removeAuthorizedKey(publicKey);
+    // also remove any matching store entries that reference the public key
+    for (const [k, v] of STORE.entries()) {
+      if (v.publicKey === publicKey) STORE.delete(k);
+    }
+    return true;
+  } catch (e) {
+    console.warn('Failed to revoke publicKey', e);
+    return false;
+  }
+}
+
+// Rotate keys: generate a fresh ephemeral keypair and optionally revoke an old public key.
+// Returns the newly created PairRecord which includes the token and privateKey.
+export async function rotateKey(oldPublicKey?: string): Promise<PairRecord> {
+  // Generate a new ephemeral pair (this also appends the new public key to authorized_keys)
+  const newPair = await generateEphemeralKey();
+  if (oldPublicKey) {
+    try {
+      revokePublicKey(oldPublicKey);
+    } catch (e) {
+      console.warn('Failed to revoke old public key during rotate', e);
+    }
+  }
+  return newPair;
+}

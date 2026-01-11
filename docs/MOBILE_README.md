@@ -24,6 +24,15 @@ Mobile Connection Address:
 ### Pairing (QR)
 The Host Agent exposes a `/pairing` endpoint which returns `sshCommands` and a `qrDataUrl` (PNG data URL). The mobile app can fetch this endpoint to show a "Scan to connect" QR and copy SSH commands to clipboard.
 
+### Push registration & wake-and-fetch (MVP)
+The mobile app should register its push token (FCM for Android, APNs for iOS) with the Agent/Server during pairing. For the MVP we use push messages only to carry a minimal `wake_token` which the app uses to establish an SSH/tunnel connection and fetch full messages over the secure channel. See `docs/notifications-tunneling.md` for details and the server relay API.
+
+- On pairing: mobile uploads `deviceToken` to Agent.
+- On push received: app performs a quick authenticated SSH/tunnel connection, exchanges `wake_token`, fetches message, and displays it.
+- Notifications MUST NOT contain plaintext message content in the payload for privacy.
+
+Note: See `docs/notifications-tunneling.md` for security notes and the minimal payload examples.
+
 ## 4. Android SDK Configuration (Local Development)
 - If you plan to run Android emulators or use `adb`, create `android/local.properties` with your SDK path. For Windows/Gradle use:
 
