@@ -214,6 +214,8 @@ export function activate(context: vscode.ExtensionContext) {
   const lastAgentInserts = new Set<string>();
   async function handleAgentMessage(data: any) {
     try {
+      // Log incoming SSE messages to the detection output for easier debugging
+      try { detectionChannel && detectionChannel.appendLine(`SSE MESSAGE: ${JSON.stringify(data)}`); } catch (e) { /* ignore */ }
       if (!data || data.sender === 'vscode') return; // ignore our own messages
       const tracked = context.globalState.get<any>('editormate.trackedChat');
       if (tracked && tracked.type === 'text') {
