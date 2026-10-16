@@ -1,0 +1,47 @@
+{
+  "$schema": "https://praveenojha.com/schemas/editormate-config-v1.json",
+  "port": 4588,
+  "host": "127.0.0.1",
+  "logLevel": "info",
+  "defaultPlatform": "telegram",
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "botToken": "YOUR_TELEGRAM_BOT_TOKEN_FROM_BOTFATHER",
+      "allowedUserIds": [
+        "123456789"
+      ]
+    },
+    "whatsapp": {
+      "enabled": false,
+      "authStrategy": "baileys_local_qr",
+      "allowedPhoneNumbers": [
+        "+1234567890"
+      ]
+    },
+    "discord": {
+      "enabled": false,
+      "botToken": "YOUR_DISCORD_BOT_TOKEN",
+      "allowedUserIds": [
+        "987654321012345678"
+      ]
+    },
+    "slack": {
+      "enabled": false,
+      "appToken": "xapp-1-...",
+      "botToken": "xoxb-..."
+    },
+    "matrix": {
+      "enabled": false,
+      "homeserver": "https://matrix-client.matrix.org",
+      "accessToken": "syt_...",
+      "roomId": "!roomId:matrix.org"
+    }
+  },
+  "features": {
+    "enableVoiceTranscription": true,
+    "enableWindowSnapshots": true,
+    "enableInteractiveApprovals": true,
+    "enablePdfReports": true
+  }
+}

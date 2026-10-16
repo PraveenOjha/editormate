@@ -1,0 +1,27 @@
+{
+  "name": "editormate-public",
+  "version": "1.0.0",
+  "description": "Public documentation, setup guides, and issue tracker for EditorMate — AI Remote Control for Cursor, Antigravity, VS Code & Claude Code",
+  "homepage": "https://www.praveenojha.com/editormate",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PraveenOjha/editormate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PraveenOjha/editormate/issues"
+  },
+  "keywords": [
+    "editormate",
+    "ai-agent",
+    "remote-control",
+    "cursor",
+    "antigravity",
+    "vscode",
+    "claude-code",
+    "telegram-bot",
+    "whatsapp",
+    "discord-bot"
+  ],
+  "author": "Praveen Ojha <support@praveenojha.com>",
+  "license": "Commercial"
+}

@@ -1,0 +1,39 @@
+{
+  "display_information": {
+    "name": "EditorMate",
+    "description": "Universal AI Coding Agent Remote Control for Antigravity, Cursor, and VS Code",
+    "background_color": "#1e293b"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "EditorMate",
+      "always_online": true
+    },
+    "slash_commands": [
+      {
+        "command": "/editormate",
+        "description": "Interact with active workstation coding agent",
+        "usage_hint": "[status | snap | pdf | chats | approve | reject]",
+        "should_escape": false
+      }
+    ]
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "commands",
+        "files:write",
+        "im:history",
+        "im:read",
+        "im:write"
+      ]
+    }
+  },
+  "settings": {
+    "interactivity": {
+      "is_enabled": true
+    },
+    "socket_mode_enabled": true
+  }
+}

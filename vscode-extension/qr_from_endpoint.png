@@ -1,1 +1,0 @@
-{"status":"ok","agent":"EditorMate Host Agent","version":"0.0.1","network":{"online":true,"localIPs":["192.168.1.22","172.17.144.1","172.22.112.1"]},"services":{"ssh":{"port":2222,"status":"running"}}}
